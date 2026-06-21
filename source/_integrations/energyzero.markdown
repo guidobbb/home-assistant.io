@@ -74,29 +74,105 @@ Create template sensors to display the prices in a chart or to calculate the all
 
 ### Prices sensor with response data
 
-To use the response data from the actions, you can create a template sensor that updates every hour.
+To use the response data from the actions, you can create a template sensor that updates every hour, today and after 2pm also tomorrow.
 
 ```yaml
 template:
   - trigger:
-      - trigger: time_pattern
-        hours: "*"
+      - platform: time_pattern
+        minutes: "5"
+      - platform: homeassistant
+        event: start
     action:
       - action: energyzero.get_energy_prices
-        response_variable: prices
         data:
           config_entry: 1b4a46c6cba0677bbfb5a8c53e8618b0
           incl_vat: true
+          start: "{{ today_at('00:00') }}"
+          end: "{{ today_at('23:59') + timedelta(days=1) }}"
+        response_variable: ezero_prices
+    
     sensor:
-      - name: Energy prices
-        device_class: timestamp
-        state: "{{ now() }}"
+      # De 48-hour sensor for the graph
+      - name: Energy Prices 2 Days
+        unique_id: energy_prices_2_days_combined
+        icon: mdi:currency-eur
+        state: "{{ now().strftime('%Y-%m-%d') }}"
         attributes:
-          prices: '{{ prices }}'
+          prices: >-
+            {% set ns = namespace(list=[]) %}
+            {% if ezero_prices.prices is defined and ezero_prices.prices | length > 0 %}
+              {% for p in ezero_prices.prices %}
+                {% set ns.list = ns.list + [{'timestamp': p.timestamp, 'price': p.price}] %}
+              {% endfor %}
+            {% endif %}
+            {{ ns.list | to_json }}
+```
+
+### Dashboard card
+
+This is an example for the Dashboard,  used with the HACS apexcharts-card
+darkgreen= cheapest, green= cheap, yellow= expensive,  red= most expensive 
+
+```yaml
+type: custom:apexcharts-card
+experimental:
+  color_threshold: true
+graph_span: 48h
+span:
+  start: day
+header:
+  show: true
+  title: powerprices today and tomorrow (incl. VAT)
+now:
+  show: true
+  label: now
+series:
+  - entity: sensor.energy_prices_2_days
+    name: Price
+    type: column
+    unit: €/kWh
+    float_precision: 3
+    data_generator: |
+      if (!entity.attributes.prices) return [];
+      let rawData = entity.attributes.prices;
+      if (typeof rawData === 'string') {
+        try { rawData = JSON.parse(rawData); } catch (e) { return []; }
+      }
+      if (!Array.isArray(rawData)) return [];
+      return rawData.map(p => [
+        new Date(p.timestamp).getTime(),
+        parseFloat(p.price)
+      ]);
+    color_threshold:
+      - value: -99
+        color: "#1D9E75"
+      - value: 0.1
+        color: "#639922"
+      - value: 0.2
+        color: "#EF9F27"
+      - value: 0.3
+        color: "#E24B4A"
+yaxis:
+  - decimals: 3
+    apex_config:
+      forceNiceScale: true
+apex_config:
+  plotOptions:
+    bar:
+      columnWidth: 95%
+  xaxis:
+    type: datetime
+    tickAmount: 12
+    labels:
+      datetimeUTC: false
+      format: dd HH:mm
+  tooltip:
+    x:
+      format: dd-MM HH:mm
 ```
 
 ### All-in price sensor
-
 To calculate the all-in hour price, you can create a template sensor that calculates the price based on the current price, energy tax, and purchase costs.
 
 ```yaml
